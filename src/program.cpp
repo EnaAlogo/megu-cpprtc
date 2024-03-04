@@ -308,7 +308,8 @@ static inline void jit_impl(
 #if (defined(_MSC_VER) && !defined(_M_ARM64))
     //TODO: how do i disable messages about msvc building the dlls and stuff do i just redirect to NUL is this good?
     static const std::string arch_flags = args.getArch().value_or(getArchFlags()); 
-    static const std::string compile_string = "cd /D \"" + std::filesystem::temp_directory_path().string() +
+    const auto this_path = std::filesystem::path(cpp_file).parent_path().string();
+    static const std::string compile_string = "cd /D \"" + this_path +
         "\" && "
         "${cxx} /nologo /MD /O${OPTLEVEL} " +
         arch_flags +

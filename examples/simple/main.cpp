@@ -21,7 +21,7 @@ void AFunction(){
 	auto path = std::filesystem::current_path() / "jitted";
 
 	megu::Program program(
-		megu::CompilerArgs(path.string(), code)
+		megu::CompilerArgs("./jitted", code)
 		.setLanguageStandard("c++14")
 		.setOptLevel("1"));
 
