@@ -32,7 +32,9 @@ namespace megu::detail
         std::size_t curr = 0;
         std::size_t pos = string.find(to_replace, curr);
         std::string ss;
-        MEGU_ENSURE(string.size() - to_replace.size() + replace_with.size() > 0, "Output string evaluated to have a negative size somehow");
+        if (!(string.size() - to_replace.size() + replace_with.size() > 0)) {
+            throw std::runtime_error("Output string evaluated to have a negative size somehow");
+        }
         ss.reserve(string.size() - to_replace.size() + replace_with.size());
         if (pos == std::string::npos)
         {
