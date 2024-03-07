@@ -92,6 +92,8 @@ POSSIBILITY OF SUCH DAMAGE.*/
 #include "vectypes.hpp" 
 #include <array>
 
+#include <threadpool.hpp>
+
 constexpr static int NUM_THREADS = ${n_threads};
 constexpr static Arch MAX_ARCH =   Arch::${arch};
 
@@ -99,149 +101,8 @@ constexpr static int64_t divup(int64_t x, int64_t y) {
 	return (x + y - 1) / y;
 }
 
+using ThreadPool = IThreadPool;
 
-struct ThreadPool {
-	ThreadPool(int pool_size)
-		: threads_(pool_size < 0 ? std::max(1, NUM_THREADS) : pool_size),
-		complete_(true),
-		available_(threads_.size()),
-		total_(threads_.size()) {
-		for (std::size_t i = 0; i < threads_.size(); ++i) {
-			threads_[i] = std::jthread([this, i](std::stop_token t) { 
-				this->main_loop(t,i);
-				});
-		}
-	}
-	~ThreadPool() {
-		{
-			std::unique_lock<std::mutex> lock(mutex_);
-			for (auto& t : threads_) {
-				t.request_stop();
-			}
-		}
-		condition_.notify_all();
-	}
-
-	constexpr size_t size() const {
-		return threads_.size();
-	}
-
-	size_t threads_available() const {
-		std::unique_lock<std::mutex> lock(mutex_);
-		return available_;
-	}
-
-	void schedule(std::function<void()> func) {
-		if (threads_.empty()) {
-			throw std::runtime_error("No threads to run a task");
-		}
-		{
-			std::unique_lock<std::mutex> lock(mutex_);
-			tasks_.emplace(std::move(func));
-			complete_ = false;
-		}
-		condition_.notify_one();
-	}
-
-	void wait() {
-		std::unique_lock<std::mutex> lock(mutex_);
-		completed_.wait(lock, [&]() { return complete_; });
-	}
-
-	bool this_thread_in_pool() const {
-		for (auto& thread : threads_) {
-			if (thread.get_id() == std::this_thread::get_id()) { 
-				return true;
-			}
-		}
-		return false;
-	}
-
-private:
-	void main_loop(std::stop_token token , std::size_t index) {
-		std::unique_lock<std::mutex> lock(mutex_);
-		while (1) {
-			// Wait on condition variable while the task is empty and
-			// the pool is still running.
-			condition_.wait(lock, [&]() { return !tasks_.empty() || token.stop_requested(); });
-			// If pool is no longer running, break out of loop.
-			if (token.stop_requested()) {
-				break;
-			}
-
-			// Copy task locally and remove from the queue.  This is
-			// done within its own scope so that the task object is
-			// destructed immediately after running the task.  This is
-			// useful in the event that the function contains
-			// shared_ptr arguments bound via bind.
-			{
-				TaskElement tasks = std::move(tasks_.front());
-				tasks_.pop();
-				// Decrement count, indicating thread is no longer available.
-				--available_;
-
-				lock.unlock();
-
-				// Run the task.
-				try {
-					if (tasks.run_with_id) {
-						tasks.with_id(index);
-					}
-					else {
-						tasks.no_id();
-					}
-				}
-				catch (const std::exception& e) {
-					std::cerr << "Exception in thread pool task: " << e.what();
-				}
-				catch (...) {
-					std::cerr << "Exception in thread pool task: unknown";
-				}
-
-				// Destruct tasks before taking the lock.  As tasks
-				// are user provided std::function, they can run
-				// arbitrary code during destruction, including code
-				// that can reentrantly call into ThreadPool (which would
-				// cause a deadlock if we were holding the lock).
-			}
-
-			// Update status of empty, maybe
-			// Need to recover the lock first
-			lock.lock();
-
-			// Increment count, indicating thread is available.
-			++available_;
-			if (tasks_.empty() && available_ == total_) {
-				complete_ = true;
-				completed_.notify_one();
-			}
-
-			// Deliberately hold the lock on the backedge, so this thread has an
-			// opportunity to acquire a new task before another thread acquires
-			// the lock.
-		} // while running_
-	}
-
-	struct TaskElement {
-		const std::function<void()> no_id; 
-		const std::function<void(std::size_t)> with_id; 
-		bool run_with_id;
-		
-		explicit TaskElement(std::function<void()> f)
-			: run_with_id(false), no_id(std::move(f)), with_id(nullptr) {}
-		explicit TaskElement(std::function<void(std::size_t)> f)
-			: run_with_id(true), no_id(nullptr), with_id(std::move(f)) {}
-	};
-	std::queue<TaskElement> tasks_;
-	std::vector<std::jthread> threads_;
-	mutable std::mutex mutex_;
-	std::condition_variable condition_;
-	std::condition_variable completed_;
-	bool complete_;
-	std::size_t available_;
-	std::size_t total_;
-
-};
 
 static constexpr std::tuple<size_t, size_t> calc_num_tasks_and_chunk_size(
 	ThreadPool const& tp,
@@ -256,13 +117,6 @@ static constexpr std::tuple<size_t, size_t> calc_num_tasks_and_chunk_size(
 	size_t num_tasks = divup((end - begin), chunk_size);
 	return std::make_tuple(num_tasks, chunk_size);
 }
-
-
-static std::unique_ptr<ThreadPool> threadPoolCreate(int psize = std::thread::hardware_concurrency()) {
-	return std::make_unique<ThreadPool>(psize);
-}
-
-
 
 struct ParallelContext {
 	static int thread_id() {
@@ -326,6 +180,8 @@ for (auto i = 1; i < range;  ++i) {
 	// Run the first task on the current thread directly.
 	fn(0, 0);
 }
+
+
 
 static void par_impl(
 	ThreadPool& tp,
@@ -435,18 +291,18 @@ struct AccumulationBuffer {
 	
 	constexpr static int size() { return BUFFER_SIZE; }
 
-	AccumulationBuffer(scalar_t const ident) {
+	constexpr AccumulationBuffer(scalar_t const ident) {
 		for (size_t i = 0; i < BUFFER_SIZE; ++i) {
 			buf_[i] = ident;
 		}
 	}
 
-	void push(scalar_t const value) {
+	constexpr void push(scalar_t const value) {
 		buf_[ParallelContext::thread_id()] = value;
  	}
 
 	template<typename SF>
-	scalar_t reduce(SF const& sf,const scalar_t ident) const {
+	constexpr scalar_t reduce(SF const& sf,const scalar_t ident) const {
 		scalar_t acc = ident;
 		for (scalar_t const partial : buf_) {
 			acc = sf(partial, acc);
@@ -457,7 +313,7 @@ struct AccumulationBuffer {
 private:
 	constexpr static int BUFFER_SIZE = NUM_THREADS + 1;
 
-	std::array<scalar_t, BUFFER_SIZE> buf_{};
+	std::array<volatile scalar_t, BUFFER_SIZE> buf_{};
 };
 
 template <class scalar_t, class F, class SF>
@@ -628,12 +484,12 @@ struct Reducer {
 	{
 		T ac1(ident), ac2(ident);
 		size_t i;
-		for (i = 0; i + 2 <= size; i += 2) {
+		for (i = 0; i < size; i += 2) {
 			ac1 = reduce(ac1,x[i * incx],i);
 			ac2 = reduce(ac2,x[(i + 1) * incx],i+1);
 		}
 		T outer = combine(ac1 , ac2);
-		if (i < size) {
+		if (i == size - 1) {
 			outer = combine(outer, reduce(outer,x[i * incx],i));
 		}
 		return outer;
@@ -711,8 +567,8 @@ static auto dot_template(void* _tp ,T const* a,int64_t incx, T2 const* b,int64_t
 	const T ident = std::common_type_t < T, T2>(0.);
 	return parallel_reduce(*tp, 0, size, MIN_SIZE, ident, 
 		[&](int64_t start, int64_t end) -> std::common_type_t<T, T2> {
-			T const* x = a + start;
-			T const* y = b + start;
+			T const* x = a + start*incx; 
+			T const* y = b + start*incy;
 			if (incx == 1 && incy == 1) {
 				auto const arch = std::min(get_arch(x), get_arch(y));
 				return Dispatcher::dispatch< std::common_type_t<T, T2>, Dot_impl>(arch, x, y, end - start);
@@ -744,7 +600,7 @@ static auto reduce_template(void* _tp,
 	using out_t = decltype(r(std::declval<T>(), std::declval<T>(),0));
 	return parallel_reduce(*tp, 0, size, MIN_SIZE, ident, 
 		[&](int64_t start, int64_t end) -> out_t {
-			T const* x = a + start; 
+			T const* x = a + start*incx; 
 			if (incx == 1) {
 				auto const arch = get_arch(x);
 				return Dispatcher::dispatch<out_t, Reducer>(arch,c,vc,r,vr,sf, x,end - start,ident); 
@@ -820,12 +676,6 @@ float Sum(void* tp, float const* x, int64_t incx, int64_t size) {
 		);
 }
 
-template<typename T>
-struct StatsT {
-	T x, y;
-};
-
-
 extern "C"
 EXPORT
 float Max(void* tp ,float const* x,int64_t incx, int64_t size) {
@@ -837,8 +687,8 @@ float Max(void* tp ,float const* x,int64_t incx, int64_t size) {
 		[](auto const x)->float {
 			float tmp_buffer[x.size()];
 			x.store(tmp_buffer);
-			float ret = tmp_buffer[0];
-			for (size_t i = 1; i < x.size(); ++i) {
+			float ret = std::numeric_limits<float>::lowest();
+			for (size_t i = 0; i < decltype(x)::size(); ++i) {
 				ret = std::max(ret, tmp_buffer[i]);
 			}
 			return ret;
@@ -880,14 +730,44 @@ int64_t Dot(void* tp, float const* x, int64_t incx, float const* y , int64_t inc
 	return dot_template(tp, x, incx, y, incy, size);
 }
 
-extern "C"
-EXPORT 
-void* CreateThreadPool(int size) {
-	return new ThreadPool(size);
+static void axpy_seq(float val, float const* x,int64_t incx,  float* dst,int64_t incy, int64_t size) {
+	for (size_t i = 0; i < size; ++i) {
+		dst[i * incy] += x[incx * i] * val;
+	}
+}
+
+NO_INLINE
+static void axpy(float val, float const* x, float* dst, int64_t size) {
+	using Vec = Vec<float, MAX_ARCH>;
+	auto const mul = Vec(val);
+	int64_t i = 0;
+	for (; i <= size - Vec::size(); i += Vec::size()) {
+		auto const iy = Vec::loadu(x + i);
+		auto d1 = Vec::loadu(dst + i);
+		d1 = iy.fmadd(mul, d1);
+		
+		d1.storeu(dst + i);
+
+	}
+	if (i == size)return;
+	const int64_t remaining = size - i;
+	for (int64_t j = 0; j < remaining; ++j, ++i) {
+		dst[i] += val * x[i];
+	}
 }
 
 extern "C"
-EXPORT 
-void DestroyThreadPool(void* thread_pool) {
-	delete reinterpret_cast<ThreadPool*>(thread_pool);
+EXPORT
+void Axpy(void* tp, float val, float const* x, int64_t incx, float* dst, int64_t incy, int64_t size) {
+	parallel_for(*reinterpret_cast<ThreadPool*>(tp), 0, size, MIN_SIZE, [&](int64_t b , int64_t e) {
+		auto const local_size = e - b;
+		auto const* local_x = x + b * incx;
+		auto* local_dst = dst + b * incy;
+		if (incx == 1 && incy == 1 && MAX_ARCH != Arch::NONE) {
+			axpy(val, local_x, local_dst, local_size);
+		}
+		else {
+			axpy_seq(val, local_x, incx, local_dst, incy, local_size);
+		}
+	});
 }

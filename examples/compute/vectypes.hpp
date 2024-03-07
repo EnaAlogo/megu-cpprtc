@@ -17,6 +17,7 @@ enum class Arch {
     AVX512
 };
 
+
 template<typename T, Arch arch> 
 struct Vec {
 };
@@ -41,6 +42,14 @@ struct Vec<float, Arch::SSE> {
         __m128 sum = _mm_hadd_ps(raw_, raw_);
         sum = _mm_hadd_ps(sum, sum);
         return _mm_cvtss_f32(sum);
+    }
+
+    unsigned char to_mask()const {
+        return _mm_movepi32_mask(_mm_castps_si128(raw_));
+    }
+
+    Vec VECTORCALL where(const unsigned char mask, Vec otherwise)const {
+        return static_cast<Vec>(_mm_mask_blend_ps(mask, raw_, otherwise.raw_));
     }
 
     Vec VECTORCALL fmadd(Vec x, Vec y)const {
@@ -173,6 +182,12 @@ struct Vec<double, Arch::SSE> {
         :raw_{ _mm_set1_pd(val) }
     {
     }
+    Vec VECTORCALL where(const unsigned char mask, Vec otherwise)const {
+        return static_cast<Vec>(_mm_mask_blend_pd(mask, raw_, otherwise.raw_));
+    }
+    unsigned char to_mask()const {
+        return _mm_movepi64_mask(_mm_castpd_si128(raw_));
+    }
     Vec VECTORCALL max(Vec y)const {
         return Vec(_mm_max_pd(raw_, y.raw_));
     }
@@ -303,10 +318,16 @@ struct Vec<float, Arch::AVX2> {
         :raw_{ _mm256_set1_ps(val) }
     {
     }
+    Vec VECTORCALL where(const unsigned char mask, Vec otherwise)const {
+        return static_cast<Vec>(_mm256_mask_blend_ps(mask, raw_, otherwise.raw_));
+    }
+
     Vec VECTORCALL max(Vec y)const {
         return Vec(_mm256_max_ps(raw_, y.raw_));
     }
-
+    unsigned char to_mask()const {
+        return _mm256_movepi32_mask(_mm256_castps_si256(raw_));
+    }
     Vec VECTORCALL min(Vec y)const {
         return Vec(_mm256_min_ps(raw_, y.raw_));
     }
@@ -432,6 +453,12 @@ struct Vec<double, Arch::AVX2> {
     explicit Vec(double val)
         :raw_{ _mm256_set1_pd(val) }
     {
+    }
+    Vec VECTORCALL where(const unsigned char mask, Vec otherwise)const {
+        return static_cast<Vec>(_mm256_mask_blend_pd(mask, raw_, otherwise.raw_));
+    }
+    unsigned char to_mask()const {
+        return _mm256_movepi64_mask(_mm256_castpd_si256(raw_));
     }
     Vec VECTORCALL max(Vec y)const {
         return Vec(_mm256_max_pd(raw_, y.raw_));
@@ -567,6 +594,12 @@ struct Vec<float, Arch::AVX512> {
         :raw_{ _mm512_set1_ps(val) }
     {
     }
+    Vec VECTORCALL where(const uint16_t mask, Vec otherwise)const {
+        return static_cast<Vec>(_mm512_mask_blend_ps(mask, raw_, otherwise.raw_));
+    }
+    uint16_t to_mask()const {
+        return _mm512_movepi32_mask(_mm512_castps_si512(raw_));
+    }
     Vec VECTORCALL fmadd(Vec x, Vec y)const {
         return Vec(_mm512_fmadd_ps(raw_, x.raw_, y.raw_));
     }
@@ -696,6 +729,10 @@ struct Vec<double, Arch::AVX512> {
         return Vec(_mm512_max_pd(raw_, y.raw_));
     }
 
+    uint16_t to_mask()const {
+        return _mm512_movepi64_mask(_mm512_castpd_si512(raw_));
+    }
+
     Vec VECTORCALL min(Vec y)const {
         return Vec(_mm512_min_pd(raw_, y.raw_));
     }
@@ -705,6 +742,10 @@ struct Vec<double, Arch::AVX512> {
     } 
     Vec VECTORCALL fmsub(Vec x, Vec y)const {
         return Vec(_mm512_fmsub_pd(raw_, x.raw_, y.raw_));
+    }
+    
+    Vec VECTORCALL where(const uint16_t mask, Vec otherwise)const {
+        return static_cast<Vec>(_mm512_mask_blend_pd(mask, raw_, otherwise.raw_));
     }
 
     double reduce_add()const { 
