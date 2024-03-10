@@ -313,7 +313,7 @@ struct AccumulationBuffer {
 private:
 	constexpr static int BUFFER_SIZE = NUM_THREADS + 1;
 
-	std::array<volatile scalar_t, BUFFER_SIZE> buf_{};
+	std::array<scalar_t, BUFFER_SIZE> buf_{};
 };
 
 template <class scalar_t, class F, class SF>
