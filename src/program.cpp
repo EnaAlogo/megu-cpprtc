@@ -72,8 +72,10 @@ namespace megu {
             }
             e.push_back(nullptr);
         }
+
         // Running the command
         intptr_t r = _wspawnve(_P_WAIT, comspec, a, e.data());
+
         return r;
 #else
         return system(cmd.data());
@@ -195,7 +197,7 @@ static std::string getArchFlags() {
 #endif
 
 static CMD& getCMD() {
-    static thread_local CMD cmd;
+    static CMD cmd;
     return cmd;
 }
 
@@ -219,7 +221,6 @@ struct JitConfig {
 #ifdef _MSC_VER
         getCMD().activate(); 
 #endif
-
         //this is broken lul lets just assume we always find a compiler 
         //MEGU_ENSURE(programExists(cxx),"Compiler for c++ not found");
 
@@ -308,7 +309,7 @@ static inline void jit_impl(
 #if (defined(_MSC_VER) && !defined(_M_ARM64))
     //TODO: how do i disable messages about msvc building the dlls and stuff do i just redirect to NUL is this good?
     static const std::string arch_flags = args.getArch().value_or(getArchFlags()); 
-    const auto this_path = std::filesystem::path(cpp_file).parent_path().string();
+    const auto this_path = std::filesystem::absolute(cpp_file).parent_path().string();
     static const std::string compile_string = "cd /D \"" + this_path +
         "\" && "
         "${cxx} /nologo /MD /O${OPTLEVEL} " +
@@ -344,10 +345,12 @@ static inline void jit_impl(
     detail::replace_first_(result, "${OPTLEVEL}", args.getOptLevel());
     detail::replace_first_(result, "${STDV}", args.getLanguageStandard());
 
-
     auto r = getCMD().run_cmd(result);
-
+#ifdef _WIN32
+    MEGU_ENSURE(r == 0, "Failed to jit compile c++ program : ", GetLastErrorMsg());
+#else
     MEGU_ENSURE(r == 0, "Failed to jit compile c++ program");
+#endif
 }
 
 static inline void cleanup(std::unique_ptr<DynamicLib>& lib_, std::string& cpp_file_, std::string& so_file_) {
